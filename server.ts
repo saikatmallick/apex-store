@@ -11,6 +11,17 @@ import { promoteToAdmin, demoteToUser, createUser, verifyUserCredentials } from 
 // Load environment variables
 dotenv.config();
 
+import { exec } from "child_process";
+
+// Global diagnostics tracking
+const dbDiagnostics = {
+  migrationStatus: "pending", // "pending" | "running" | "success" | "failed"
+  migrationError: null as string | null,
+  migrationStdout: null as string | null,
+  connStatus: "untested", // "untested" | "checking" | "connected" | "failed"
+  connError: null as string | null,
+};
+
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -25,6 +36,35 @@ async function startServer() {
   // 1. Health check
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
+  // 1a. Database verification / diagnostics
+  app.get("/api/db-verify", async (req, res) => {
+    try {
+      dbDiagnostics.connStatus = "checking";
+      dbDiagnostics.connError = null;
+      
+      const { createPool } = await import("./src/db/index.ts");
+      const pool = createPool();
+      await pool.query("SELECT 1");
+      dbDiagnostics.connStatus = "connected";
+      await pool.end();
+    } catch (err: any) {
+      console.error("[DB DIAGNOSTICS ERROR] Connection verification failed:", err);
+      dbDiagnostics.connStatus = "failed";
+      dbDiagnostics.connError = err.message || String(err);
+    }
+
+    res.json({
+      environment: {
+        NODE_ENV: process.env.NODE_ENV,
+        SQL_HOST: process.env.SQL_HOST ? `${process.env.SQL_HOST.trim().slice(0, 15)}...` : "not set",
+        SQL_USER: process.env.SQL_USER ? "set" : "not set",
+        SQL_DB_NAME: process.env.SQL_DB_NAME ? "set" : "not set",
+        DATABASE_URL_SET: !!process.env.DATABASE_URL,
+      },
+      diagnostics: dbDiagnostics
+    });
   });
 
   // 1b. Auth: Register
@@ -336,223 +376,247 @@ async function startServer() {
     });
   }
 
-  // Auto-seed database products if they do not exist
-  try {
-    const existing = await getAllProducts();
-    const existingNames = new Set(existing.map((p) => p.name));
+  // Auto-seed database products and set up schema asynchronously
+  async function runDbSchemaSyncAndSeed() {
+    dbDiagnostics.migrationStatus = "running";
+    console.log("[DB INIT] Starting background schema sync...");
 
-    const seedProducts = [
-      {
-        name: "Raw Indigo Denim Jacket",
-        description: "Classic heavyweight selvedge denim designed to age beautifully, finished with custom copper rivets and reinforced stitching.",
-        price: 420000,
-        imageUrl: "https://images.unsplash.com/photo-1576995853123-5a10305d93c0?q=80&w=800&auto=format&fit=crop",
-        category: "Apparel",
-        stock: 15
-      },
-      {
-        name: "Ribbed Merino Wool Knit",
-        description: "Luxuriously soft premium Merino wool knitwear featuring dynamic ribbed sleeve accents and mock collar styling.",
-        price: 310000,
-        imageUrl: "https://images.unsplash.com/photo-1556905055-8f358a7a47b2?q=80&w=800&auto=format&fit=crop",
-        category: "Apparel",
-        stock: 20
-      },
-      {
-        name: "Tailored Linen Casual Shirt",
-        description: "Breathable organic linen blend designed with relaxed shoulders, custom pearl buttons, and curved modern seam detailing.",
-        price: 220000,
-        imageUrl: "https://images.unsplash.com/photo-1596755094514-f87e34085b2c?q=80&w=800&auto=format&fit=crop",
-        category: "Apparel",
-        stock: 18
-      },
-      {
-        name: "Classic Leather Chelsea Boots",
-        description: "Handcrafted full-grain leather boots built with water-resistant elastic side gores and supportive, oil-resistant rubber outsoles.",
-        price: 649900,
-        imageUrl: "https://images.unsplash.com/photo-1608256246200-53e635b5b65f?q=80&w=800&auto=format&fit=crop",
-        category: "Footwear",
-        stock: 10
-      },
-      {
-        name: "Aero-Knit Comfort Trainers",
-        description: "Ultra-breathable woven mesh structured with high-rebound cushioning midsoles for exceptional arch support and daily strides.",
-        price: 449900,
-        imageUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?q=80&w=800&auto=format&fit=crop",
-        category: "Footwear",
-        stock: 25
-      },
-      {
-        name: "Minimalist Suede Sneakers",
-        description: "Clean Italian suede low-top profile featuring padded memory-foam footbeds and durable stitched rubber cup-soles.",
-        price: 520000,
-        imageUrl: "https://images.unsplash.com/photo-1549298916-b41d501d3772?q=80&w=800&auto=format&fit=crop",
-        category: "Footwear",
-        stock: 14
-      },
-      {
-        name: "Hex-Grip Milled Cast Iron Dumbbells",
-        description: "Premium tactile matte finish with hexagonal rolling protection, balancing heavy-duty build quality with exceptional comfort.",
-        price: 380000,
-        imageUrl: "https://images.unsplash.com/photo-1638536532686-d610adfc8e5c?q=80&w=800&auto=format&fit=crop",
-        category: "Fitness",
-        stock: 12
-      },
-      {
-        name: "Natural Cork Non-Slip Yoga Mat",
-        description: "Eco-friendly premium natural cork paired with a high-density natural tree rubber base for superior dry and wet grip.",
-        price: 249000,
-        imageUrl: "https://images.unsplash.com/photo-1601925260368-ae2f83cf8b7f?q=80&w=800&auto=format&fit=crop",
-        category: "Fitness",
-        stock: 30
-      },
-      {
-        name: "Waterproof Touch Smart Fitness Band",
-        description: "Lightweight premium tracker featuring comprehensive blood flow, heart, and metabolic analysis with deep OLED metrics.",
-        price: 299000,
-        imageUrl: "https://images.unsplash.com/photo-1575311373937-040b8e1fd5b6?q=80&w=800&auto=format&fit=crop",
-        category: "Fitness",
-        stock: 40
-      },
-      {
-        name: "Botanical Therapy Elixir Serum",
-        description: "A lightweight, transformative facial oil containing cold-pressed rosehip seed extract, botanical vitamins, and nourishing active jojoba for a healthy, radiant bounce.",
-        price: 189000,
-        imageUrl: "https://images.unsplash.com/photo-1601049541289-9b1b7bbbfe19?q=80&w=800&auto=format&fit=crop",
-        category: "Beauty & Cosmetics",
-        stock: 35
-      },
-      {
-        name: "Purifying Mineral Mud Mask",
-        description: "Activated volcanic charcoal blended with therapeutic seaweed extract designed to lift impurities and tighten pores.",
-        price: 125000,
-        imageUrl: "https://images.unsplash.com/photo-1598440947619-2c35fc9aa908?q=80&w=800&auto=format&fit=crop",
-        category: "Beauty & Cosmetics",
-        stock: 45
-      },
-      {
-        name: "Premium Hydrating Daily Moisturizer",
-        description: "Velvety botanical moisturizer rich in natural vitamin E and calming chamomile extract to maintain all-day moisture balance.",
-        price: 145000,
-        imageUrl: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?q=80&w=800&auto=format&fit=crop",
-        category: "Beauty & Cosmetics",
-        stock: 50
-      },
-      {
-        name: "Lay-Flat Bullet Grid Journal",
-        description: "Exquisite hardcover journal utilizing thick 120gsm bleeding-resistant academic cream pages, hand-bound for complete flat writing.",
-        price: 95000,
-        imageUrl: "https://images.unsplash.com/photo-1531346878377-a5be20888e57?q=80&w=800&auto=format&fit=crop",
-        category: "Books & Stationary",
-        stock: 60
-      },
-      {
-        name: "Brushed Brass Vintage Fountain Pen",
-        description: "Engineered heavy-duty solid brass fountain pen fitted with an iridium-tipped medium nib, housed in a matching protective brass case.",
-        price: 320000,
-        imageUrl: "https://images.unsplash.com/photo-1583485088034-697b5bc54ccd?q=80&w=800&auto=format&fit=crop",
-        category: "Books & Stationary",
-        stock: 15
-      },
-      {
-        name: "Minimalist Leather Desk Pad",
-        description: "Elegantly treated waterproof vegan leather desk mat providing an exceptionally smooth surface for fluid pens and optical mice.",
-        price: 180000,
-        imageUrl: "https://images.unsplash.com/photo-1585776245991-cf89dd7fc73a?q=80&w=800&auto=format&fit=crop",
-        category: "Books & Stationary",
-        stock: 22
-      },
-      {
-        name: "Hi-Fi Studio Condenser Microphone",
-        description: "Vocal and acoustic capture masterpiece built with a gold-sputtered diaphragm and professional cardioid pickup patterns.",
-        price: 1249900,
-        imageUrl: "https://images.unsplash.com/photo-1590602847861-f357a9332bbc?q=80&w=800&auto=format&fit=crop",
-        category: "Electronics",
-        stock: 14
-      },
-      {
-        name: "Minimalist Leather Backpack",
-        description: "Water-resistant, hand-crafted full-grain leather backpack featuring a 15-inch laptop sleeve and secure brass magnetic clasps.",
-        price: 249900,
-        imageUrl: "https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=500&auto=format&fit=crop&q=60",
-        category: "Accessories",
-        stock: 14
-      },
-      {
-        name: "Adjustable Aluminum Laptop Stand",
-        description: "Solid aluminum alloy laptop riser, fully foldable, heat-vent ventilation, fits laptops from 10 to 17 inches.",
-        price: 129900,
-        imageUrl: "https://images.unsplash.com/photo-1616440347437-b1c73416efc2?w=500&auto=format&fit=crop&q=60",
-        category: "Accessories",
-        stock: 25
-      },
-      {
-        name: "Handcrafted Premium Leather Wallet",
-        description: "Slim bifold wallet made from vegetable-tanned leather featuring secure RFID-blocking compartments and hand-stitched borders.",
-        price: 220000,
-        imageUrl: "https://images.unsplash.com/photo-1627123424574-724758594e93?q=80&w=800&auto=format&fit=crop",
-        category: "Accessories",
-        stock: 30
-      },
-      {
-        name: "Damascus Master Chef Knife",
-        description: "Meticulously crafted from 67 layers of VG-10 Damascus steel, with a razor-sharp core and an ergonomic Rosewood handle.",
-        price: 149900,
-        imageUrl: "/src/assets/images/damascus_chef_knife_board_1781971003517.jpg",
-        category: "Home & Kitchen",
-        stock: 12
-      },
-      {
-        name: "Precision Burr Coffee Grinder",
-        description: "An exquisite white professional burr grinder designed to complement beautiful espresso machines. Engineered for exceptionally precise, low-retention grinding with stepless adjustments and wooden accent finishes.",
-        price: 849900,
-        imageUrl: "/src/assets/images/white_espresso_niche_grinder_setup_1781970717094.jpg",
-        category: "Home & Kitchen",
-        stock: 15
-      },
-      {
-        name: "Double-Walled Glass Cups (Set of 2)",
-        description: "Insulated borosilicate glassware that preserves optimal drink temperature while remaining cool and dry to the touch.",
-        price: 180000,
-        imageUrl: "https://images.unsplash.com/photo-1541167760496-1628856ab772?q=80&w=800&auto=format&fit=crop",
-        category: "Home & Kitchen",
-        stock: 25
-      },
-      {
-        name: "Brutalist Ash Wood Side Table",
-        description: "Hand-sculpted stool or end table crafted from a single carbonized chunk of solid sustainable European Ashwood.",
-        price: 1150000,
-        imageUrl: "https://images.unsplash.com/photo-1506898667547-42e22a46e125?q=80&w=800&auto=format&fit=crop",
-        category: "Furniture",
-        stock: 8
+    exec("npx drizzle-kit push --config=src/db/drizzle.config.ts", async (error, stdout, stderr) => {
+      if (error) {
+        console.error("[DB INIT ERROR] Database schema sync failed:", error.message);
+        dbDiagnostics.migrationStatus = "failed";
+        dbDiagnostics.migrationError = error.message;
+        dbDiagnostics.migrationStdout = stderr || stdout;
+        return;
       }
-    ];
 
-    let seedCount = 0;
-    for (const prod of seedProducts) {
-      if (!existingNames.has(prod.name)) {
-        await createProduct(prod);
-        seedCount++;
-      }
-    }
-    if (seedCount > 0) {
-      console.log(`[SEED] Successfully seeded ${seedCount} new premium products.`);
-    }
+      console.log("[DB INIT SUCCESS] Database schema sync completed!");
+      dbDiagnostics.migrationStatus = "success";
+      dbDiagnostics.migrationStdout = stdout;
 
-    // Seed default admin
-    try {
-      await createUser("admin@store.com", "admin123", "Store Administrator");
-      console.log("[SEED] Default admin user 'admin@store.com' seeded successfully.");
-    } catch (adminErr: any) {
-      if (adminErr.message?.includes("already exists")) {
-        console.log("[SEED] Default admin user already exists.");
-      } else {
-        console.error("[SEED ERROR] Default admin user seeding failed:", adminErr);
+      try {
+        const existing = await getAllProducts();
+        const existingNames = new Set(existing.map((p) => p.name));
+
+        const seedProducts = [
+          {
+            name: "Raw Indigo Denim Jacket",
+            description: "Classic heavyweight selvedge denim designed to age beautifully, finished with custom copper rivets and reinforced stitching.",
+            price: 420000,
+            imageUrl: "https://images.unsplash.com/photo-1576995853123-5a10305d93c0?q=80&w=800&auto=format&fit=crop",
+            category: "Apparel",
+            stock: 15
+          },
+          {
+            name: "Ribbed Merino Wool Knit",
+            description: "Luxuriously soft premium Merino wool knitwear featuring dynamic ribbed sleeve accents and mock collar styling.",
+            price: 310000,
+            imageUrl: "https://images.unsplash.com/photo-1556905055-8f358a7a47b2?q=80&w=800&auto=format&fit=crop",
+            category: "Apparel",
+            stock: 20
+          },
+          {
+            name: "Tailored Linen Casual Shirt",
+            description: "Breathable organic linen blend designed with relaxed shoulders, custom pearl buttons, and curved modern seam detailing.",
+            price: 220000,
+            imageUrl: "https://images.unsplash.com/photo-1596755094514-f87e34085b2c?q=80&w=800&auto=format&fit=crop",
+            category: "Apparel",
+            stock: 18
+          },
+          {
+            name: "Classic Leather Chelsea Boots",
+            description: "Handcrafted full-grain leather boots built with water-resistant elastic side gores and supportive, oil-resistant rubber outsoles.",
+            price: 649900,
+            imageUrl: "https://images.unsplash.com/photo-1608256246200-53e635b5b65f?q=80&w=800&auto=format&fit=crop",
+            category: "Footwear",
+            stock: 10
+          },
+          {
+            name: "Aero-Knit Comfort Trainers",
+            description: "Ultra-breathable woven mesh structured with high-rebound cushioning midsoles for exceptional arch support and daily strides.",
+            price: 449900,
+            imageUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?q=80&w=800&auto=format&fit=crop",
+            category: "Footwear",
+            stock: 25
+          },
+          {
+            name: "Minimalist Suede Sneakers",
+            description: "Clean Italian suede low-top profile featuring padded memory-foam footbeds and durable stitched rubber cup-soles.",
+            price: 520000,
+            imageUrl: "https://images.unsplash.com/photo-1549298916-b41d501d3772?q=80&w=800&auto=format&fit=crop",
+            category: "Footwear",
+            stock: 14
+          },
+          {
+            name: "Hex-Grip Milled Cast Iron Dumbbells",
+            description: "Premium tactile matte finish with hexagonal rolling protection, balancing heavy-duty build quality with exceptional comfort.",
+            price: 380000,
+            imageUrl: "https://images.unsplash.com/photo-1638536532686-d610adfc8e5c?q=80&w=800&auto=format&fit=crop",
+            category: "Fitness",
+            stock: 12
+          },
+          {
+            name: "Natural Cork Non-Slip Yoga Mat",
+            description: "Eco-friendly premium natural cork paired with a high-density natural tree rubber base for superior dry and wet grip.",
+            price: 249000,
+            imageUrl: "https://images.unsplash.com/photo-1601925260368-ae2f83cf8b7f?q=80&w=800&auto=format&fit=crop",
+            category: "Fitness",
+            stock: 30
+          },
+          {
+            name: "Waterproof Touch Smart Fitness Band",
+            description: "Lightweight premium tracker featuring comprehensive blood flow, heart, and metabolic analysis with deep OLED metrics.",
+            price: 299000,
+            imageUrl: "https://images.unsplash.com/photo-1575311373937-040b8e1fd5b6?q=80&w=800&auto=format&fit=crop",
+            category: "Fitness",
+            stock: 40
+          },
+          {
+            name: "Botanical Therapy Elixir Serum",
+            description: "A lightweight, transformative facial oil containing cold-pressed rosehip seed extract, botanical vitamins, and nourishing active jojoba for a healthy, radiant bounce.",
+            price: 189000,
+            imageUrl: "https://images.unsplash.com/photo-1601049541289-9b1b7bbbfe19?q=80&w=800&auto=format&fit=crop",
+            category: "Beauty & Cosmetics",
+            stock: 35
+          },
+          {
+            name: "Purifying Mineral Mud Mask",
+            description: "Activated volcanic charcoal blended with therapeutic seaweed extract designed to lift impurities and tighten pores.",
+            price: 125000,
+            imageUrl: "https://images.unsplash.com/photo-1598440947619-2c35fc9aa908?q=80&w=800&auto=format&fit=crop",
+            category: "Beauty & Cosmetics",
+            stock: 45
+          },
+          {
+            name: "Premium Hydrating Daily Moisturizer",
+            description: "Velvety botanical moisturizer rich in natural vitamin E and calming chamomile extract to maintain all-day moisture balance.",
+            price: 145000,
+            imageUrl: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?q=80&w=800&auto=format&fit=crop",
+            category: "Beauty & Cosmetics",
+            stock: 50
+          },
+          {
+            name: "Lay-Flat Bullet Grid Journal",
+            description: "Exquisite hardcover journal utilizing thick 120gsm bleeding-resistant academic cream pages, hand-bound for complete flat writing.",
+            price: 95000,
+            imageUrl: "https://images.unsplash.com/photo-1531346878377-a5be20888e57?q=80&w=800&auto=format&fit=crop",
+            category: "Books & Stationary",
+            stock: 60
+          },
+          {
+            name: "Brushed Brass Vintage Fountain Pen",
+            description: "Engineered heavy-duty solid brass fountain pen fitted with an iridium-tipped medium nib, housed in a matching protective brass case.",
+            price: 320000,
+            imageUrl: "https://images.unsplash.com/photo-1583485088034-697b5bc54ccd?q=80&w=800&auto=format&fit=crop",
+            category: "Books & Stationary",
+            stock: 15
+          },
+          {
+            name: "Minimalist Leather Desk Pad",
+            description: "Elegantly treated waterproof vegan leather desk mat providing an exceptionally smooth surface for fluid pens and optical mice.",
+            price: 180000,
+            imageUrl: "https://images.unsplash.com/photo-1585776245991-cf89dd7fc73a?q=80&w=800&auto=format&fit=crop",
+            category: "Books & Stationary",
+            stock: 22
+          },
+          {
+            name: "Hi-Fi Studio Condenser Microphone",
+            description: "Vocal and acoustic capture masterpiece built with a gold-sputtered diaphragm and professional cardioid pickup patterns.",
+            price: 1249900,
+            imageUrl: "https://images.unsplash.com/photo-1590602847861-f357a9332bbc?q=80&w=800&auto=format&fit=crop",
+            category: "Electronics",
+            stock: 14
+          },
+          {
+            name: "Minimalist Leather Backpack",
+            description: "Water-resistant, hand-crafted full-grain leather backpack featuring a 15-inch laptop sleeve and secure brass magnetic clasps.",
+            price: 249900,
+            imageUrl: "https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=500&auto=format&fit=crop&q=60",
+            category: "Accessories",
+            stock: 14
+          },
+          {
+            name: "Adjustable Aluminum Laptop Stand",
+            description: "Solid aluminum alloy laptop riser, fully foldable, heat-vent ventilation, fits laptops from 10 to 17 inches.",
+            price: 129900,
+            imageUrl: "https://images.unsplash.com/photo-1616440347437-b1c73416efc2?w=500&auto=format&fit=crop&q=60",
+            category: "Accessories",
+            stock: 25
+          },
+          {
+            name: "Handcrafted Premium Leather Wallet",
+            description: "Slim bifold wallet made from vegetable-tanned leather featuring secure RFID-blocking compartments and hand-stitched borders.",
+            price: 220000,
+            imageUrl: "https://images.unsplash.com/photo-1627123424574-724758594e93?q=80&w=800&auto=format&fit=crop",
+            category: "Accessories",
+            stock: 30
+          },
+          {
+            name: "Damascus Master Chef Knife",
+            description: "Meticulously crafted from 67 layers of VG-10 Damascus steel, with a razor-sharp core and an ergonomic Rosewood handle.",
+            price: 149900,
+            imageUrl: "/src/assets/images/damascus_chef_knife_board_1781971003517.jpg",
+            category: "Home & Kitchen",
+            stock: 12
+          },
+          {
+            name: "Precision Burr Coffee Grinder",
+            description: "An exquisite white professional burr grinder designed to complement beautiful espresso machines. Engineered for exceptionally precise, low-retention grinding with stepless adjustments and wooden accent finishes.",
+            price: 849900,
+            imageUrl: "/src/assets/images/white_espresso_niche_grinder_setup_1781970717094.jpg",
+            category: "Home & Kitchen",
+            stock: 15
+          },
+          {
+            name: "Double-Walled Glass Cups (Set of Set)",
+            description: "Insulating and thermal, double-walled glasses that lock in hydration with supreme temperature retention.",
+            price: 180000,
+            imageUrl: "https://images.unsplash.com/photo-1541167760496-1628856ab772?q=80&w=800&auto=format&fit=crop",
+            category: "Home & Kitchen",
+            stock: 25
+          },
+          {
+            name: "Brutalist Ash Wood Side Table",
+            description: "Hand-sculpted stool or end table crafted from a single carbonized chunk of solid sustainable European Ashwood.",
+            price: 1150000,
+            imageUrl: "https://images.unsplash.com/photo-1506898667547-42e22a46e125?q=80&w=800&auto=format&fit=crop",
+            category: "Furniture",
+            stock: 8
+          }
+        ];
+
+        let seedCount = 0;
+        for (const prod of seedProducts) {
+          if (!existingNames.has(prod.name)) {
+            await createProduct(prod);
+            seedCount++;
+          }
+        }
+        if (seedCount > 0) {
+          console.log(`[SEED] Successfully seeded ${seedCount} new premium products.`);
+        }
+
+        // Seed default admin
+        try {
+          await createUser("admin@store.com", "admin123", "Store Administrator");
+          console.log("[SEED] Default admin user 'admin@store.com' seeded successfully.");
+        } catch (adminErr: any) {
+          if (adminErr.message?.includes("already exists")) {
+            console.log("[SEED] Default admin user already exists.");
+          } else {
+            console.error("[SEED ERROR] Default admin user seeding failed:", adminErr);
+          }
+        }
+      } catch (seedErr) {
+        console.error("[SEED ERROR] Database seeding skipped or failed:", seedErr);
       }
-    }
-  } catch (seedErr) {
-    console.error("[SEED ERROR] Database seeding skipped or failed:", seedErr);
+    });
   }
+
+  // Fire-and-forget background schema push + seeding
+  runDbSchemaSyncAndSeed().catch((err) => {
+    console.error("[DB INIT WARN] Async run initialization crashed:", err);
+  });
 
   // Bind to port 3000 and interface 0.0.0.0
   app.listen(PORT, "0.0.0.0", () => {
