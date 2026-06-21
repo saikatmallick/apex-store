@@ -6,23 +6,48 @@
     <title>Apex Store</title>
     <script>
       // Self-healing interceptor for nested iframe/sandbox environments where window.fetch has only a getter.
-      // This prevents fatal crashes when third-party libraries attempt simple assignments like "window.fetch = ..." or "self.fetch = ...".
+      // This prevents fatal crashes when third-party libraries attempt simple assignments like "window.fetch = ...", "self.fetch = ...", etc.
       (function() {
         try {
-          var originalFetch = window.fetch;
+          var originalFetch = window.fetch || self.fetch || globalThis.fetch;
           var currentFetch = originalFetch;
-          Object.defineProperty(window, 'fetch', {
-            get: function() {
-              return currentFetch;
-            },
-            set: function(val) {
-              currentFetch = val;
-            },
-            configurable: true,
-            enumerable: true
+
+          function getFetch() {
+            return currentFetch;
+          }
+
+          function setFetch(val) {
+            currentFetch = val;
+          }
+
+          var targets = [window, self, globalThis];
+          if (typeof Window !== 'undefined' && Window.prototype) {
+            targets.push(Window.prototype);
+          }
+
+          targets.forEach(function(target) {
+            if (!target) return;
+            try {
+              // Try to delete the existing property (or prototype property) to clear getter-only restrictions if possible
+              try {
+                delete target.fetch;
+              } catch (err) {}
+
+              Object.defineProperty(target, 'fetch', {
+                get: getFetch,
+                set: setFetch,
+                configurable: true,
+                enumerable: true
+              });
+            } catch (e) {
+              // Fail-safe: try to assign directly if defineProperty is blocked
+              try {
+                target.fetch = currentFetch;
+              } catch (err) {}
+            }
           });
-        } catch (e) {
-          console.warn("[FETCH SHIM WARNING] Failed to apply configurable fetch properties.", e);
+        } catch (globalError) {
+          console.warn("[FETCH SHIM WARNING] Failed to apply configurable fetch properties.", globalError);
         }
       })();
     </script>
