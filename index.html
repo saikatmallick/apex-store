@@ -4,6 +4,28 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Apex Store</title>
+    <script>
+      // Self-healing interceptor for nested iframe/sandbox environments where window.fetch has only a getter.
+      // This prevents fatal crashes when third-party libraries attempt simple assignments like "window.fetch = ..." or "self.fetch = ...".
+      (function() {
+        try {
+          var originalFetch = window.fetch;
+          var currentFetch = originalFetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return currentFetch;
+            },
+            set: function(val) {
+              currentFetch = val;
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          console.warn("[FETCH SHIM WARNING] Failed to apply configurable fetch properties.", e);
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
