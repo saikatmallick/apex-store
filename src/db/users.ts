@@ -30,6 +30,10 @@ export async function createUser(email: string, passwordPlain: string, displayNa
 
     return result[0];
   } catch (error: any) {
+    if (error.message?.includes("already exists")) {
+      // Expected business constraint, do not log console.error
+      throw error;
+    }
     console.error("Database user creation failed:", error);
     throw error;
   }
