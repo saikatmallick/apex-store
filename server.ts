@@ -94,7 +94,11 @@ async function startServer() {
         profile: user,
       });
     } catch (error: any) {
-      console.error("Registration failed:", error);
+      if (error.message?.includes("already exists")) {
+        console.log(`[AUTH] Registration attempted for existing user: ${req.body.email}`);
+      } else {
+        console.error("Registration failed with unexpected error:", error);
+      }
       res.status(400).json({ error: error.message });
     }
   });
