@@ -6,12 +6,48 @@ dotenv.config();
 
 const connectionString = process.env.DATABASE_URL || process.env.SQL_URL;
 
+const getSSLConfig = (host?: string, connStr?: string) => {
+  if (process.env.SQL_SSL === 'false' || process.env.SQL_SSL === '0') return false;
+  if (process.env.SQL_SSL === 'true' || process.env.SQL_SSL === '1') return { rejectUnauthorized: false };
+  if (process.env.PGSSLMODE === 'disable') return false;
+
+  let target = host || '';
+  if (!target && connStr) {
+    try {
+      const url = new URL(connStr);
+      target = url.hostname;
+    } catch {
+      const match = connStr.match(/@([^/:]+)/);
+      if (match) {
+        target = match[1];
+      }
+    }
+  }
+
+  if (!target) return false;
+  const h = target.toLowerCase();
+  
+  if (
+    h.includes('localhost') ||
+    h.includes('127.0.0.1') ||
+    h.includes('railway') ||
+    h.includes('internal') ||
+    h === 'postgres' ||
+    h === 'db' ||
+    !h.includes('.')
+  ) {
+    return false;
+  }
+  
+  return { rejectUnauthorized: false };
+};
+
 let dbCredentials: any;
 
 if (connectionString) {
   dbCredentials = {
     url: connectionString,
-    ssl: connectionString.includes('localhost') || connectionString.includes('127.0.0.1') ? false : { rejectUnauthorized: false },
+    ssl: getSSLConfig(undefined, connectionString),
   };
 } else {
   const sqlHost = process.env.SQL_HOST?.trim();
@@ -32,15 +68,13 @@ if (connectionString) {
     throw new Error("SQL_PASSWORD or SQL_ADMIN_PASSWORD must be set in environment variables.");
   }
 
-  const isLocal = sqlHost.includes('localhost') || sqlHost.includes('127.0.0.1');
-
   dbCredentials = {
     host: sqlHost,
     user: user,
     password: password,
     database: sqlDbName,
     port: process.env.SQL_PORT ? parseInt(process.env.SQL_PORT.trim(), 10) : 5432,
-    ssl: isLocal ? false : { rejectUnauthorized: false },
+    ssl: getSSLConfig(sqlHost),
   };
 }
 
