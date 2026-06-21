@@ -1,0 +1,6 @@
+{
+  "name": "E-Commerce Web Application",
+  "description": "A basic online store featuring product cataloging, secure user authentication, shopping carts, checkout, and live order tracking alongside an admin panel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
